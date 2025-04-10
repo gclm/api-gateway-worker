@@ -1,3 +1,5 @@
+import { handleRequest as shadowFetch } from './shadowfetch.js';
+
 const API_CONFIGS = {
     openai: {
       host: 'api.openai.com',
@@ -296,15 +298,16 @@ const API_CONFIGS = {
               <h1>API 代理服务</h1>
               <p>一站式 API 代理服务</p>
           </div>
-          <!-- 减小上方间距 -->
+          <!-- 减小上方间距
           <div style="text-align: center; margin: -4rem 0 0rem;">
-              <a href="https://github.com/Ten-o/api_gateway_worker" class="github-link" target="_blank">
+              <a href="https://github.com/gclm/api-gateway-worker" class="github-link" target="_blank">
                   <svg class="github-icon" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
                   </svg>
                   在 GitHub 上查看源码
               </a>
           </div>
+           -->
           <div class="grid">
               ${Object.entries(API_CONFIGS).map(([provider, config], index) => `
                   <div class="card" style="--order: ${index + 1}">
@@ -350,63 +353,68 @@ const API_CONFIGS = {
           }
       </script>
   </body>
-  </html>`;addEventListener('fetch', event => {
-    event.respondWith(handleRequest(event.request));
-  });
+  </html>`;
 
-  async function handleRequest(request) {
-    const url = new URL(request.url);
-    
-    // 首页处理
-    if (url.pathname === '/') {
-      return new Response(HTML_TEMPLATE, {
-        headers: { 'Content-Type': 'text/html;charset=UTF-8' }
-      });
-    }
-
-    try {
-      const [_, service] = url.pathname.split('/');
-      
-      if (!API_CONFIGS[service]) {
-        return new Response('Invalid service', { status: 400 });
-      }
-      const config = API_CONFIGS[service];
-
-      if (request.method === 'GET' && (url.pathname === `/${service}` || url.pathname === `/${service}/`)) {
-        return Response.redirect(url.origin, 302);
-      }
-
-      const targetPath = url.pathname.replace(`/${service}`, '');
-      const targetURL = `https://${config.host}${targetPath}${url.search}`;
-
-      const headers = new Headers(request.headers);
-      headers.delete('host');
-
-      const response = await fetch(targetURL, {
-        method: request.method,
-        headers: headers,
-        body: request.body
-      });
-
-      return new Response(response.body, {
-        status: response.status,
-        headers: response.headers
-      });
-
-    } catch (error) {
-      return new Response(`Error: ${error.message}`, { status: 500 });
-    }
-  }
-
-  function handleCORS() {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Max-Age': '86400',
-        'Allow': 'GET, HEAD, POST, OPTIONS'
-      }
+async function handleRequest(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname.slice(1);
+  const [service, ...rest] = path.split('/');
+  
+  // 如果是根路径，返回 UI
+  if (!service) {
+    return new Response(HTML_TEMPLATE, {
+      headers: { 'content-type': 'text/html;charset=UTF-8' },
     });
   }
+  
+  // 获取服务配置
+  const config = API_CONFIGS[service];
+  if (!config) {
+    return new Response('Service not found', { status: 404 });
+  }
+  
+  // 构建目标 URL
+  const targetPath = rest.join('/');
+  const targetUrl = config.directUrl 
+    ? `${url.protocol}//${config.host}/${targetPath}${url.search}`
+    : `https://${config.host}/${targetPath}${url.search}`;
+  
+  try {
+    // 使用安全代理发送请求
+    const response = await shadowFetch(request, targetUrl, env);
+    
+    // 处理 CORS
+    const corsHeaders = handleCORS();
+    const headers = new Headers(response.headers);
+    Object.entries(corsHeaders).forEach(([key, value]) => {
+      headers.set(key, value);
+    });
+    
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  } catch (error) {
+    console.error('Request failed:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+function handleCORS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Max-Age': '86400',
+      'Allow': 'GET, HEAD, POST, OPTIONS'
+    }
+  });
+}
+
+// 添加默认导出
+export default {
+  fetch: (request, env) => handleRequest(request, env)
+};
